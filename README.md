@@ -1,0 +1,4 @@
+prvi-projekt
+============
+
+Sat solver
