@@ -9,6 +9,11 @@ try:
 except NameError:
     basestring = str
 
+# Ali naj se seznami konjunktov in disjunktov sortirajo?
+# Nastavi na list za nesortiranje
+# Nastavi na sorted za sortiranje
+sortSet = sorted
+
 def paren(s, level, expl):
     """Postavi oklepaje okoli izraza.
 Vrne niz s, ko je level <= expl, niz s, obdan z oklepaji, sicer.
@@ -32,7 +37,7 @@ in z negacijami samo neposredno na spremenljivkah.
 Argument:
 f -- logični izraz
 """
-    return f.flatten()
+    return f.simplify()
     
 def cnf(f):
     """Vrne izraz f v konjunktivni normalni obliki, torej kot konjunkcijo
@@ -50,21 +55,25 @@ f -- logični izraz
 """
     return f.flatten().dnf()
     
-def getValues(d, p=None):
+def getValues(d, root=None, p=None):
     """Vrne prireditve vrednosti spremenljivkam.
 Če katera od spremenljivk nima vrednosti, vrne None. V nasprotnem primeru
 prireditve vrne v obliki slovarja.
 Argumenta:
 d -- slovar podizrazov
+root -- koren grafa
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 """
+    if root != None:
+        if not root.getSure(p):
+            return root
     val = {k.p: v.getValue(p) for (k, v) in d.items() if isinstance(k, Literal)}
-    if None in val.values():
+    if root == None and None in val.values():
         return None
     else:
-        return val
+        return {k: v for (k, v) in val.items() if v != None}
     
-def sat(f, d=None, trace=False):
+def sat(f, d=None, root=False, trace=False):
     """Poskusi določiti izpolnljivost logične formule f s pomočjo linearnega
 algoritma.
 Če ugotovi, da formula ni izpolnljiva, vrne False.
@@ -74,15 +83,21 @@ jo vrne v obliki slovarja.
 Argumenti:
 f -- logični izraz
 d -- slovar podizrazov, privzeto None (naredi nov slovar)
+root -- ali naj se vrne koren grafa v primeru neodločenosti
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
     if not type(d) == dict:
         d = {}
-    if not f.flatten().ncf().node(d).valuate(True, None, None, trace):
+    n = f.simplify().ncf().node(d)
+    if not n.valuate(True, (None, 0), None, trace):
         return False
-    return getValues(d)
+    out = getValues(d, n)
+    if not root and type(out) != dict:
+        return None
+    else:
+        return out
         
-def sat3(f, d=None, trace=False):
+def sat3(f, d=None, root=False, trace=False):
     """Poskusi določiti izpolnljivost logične formule f s pomočjo kubičnega
 algoritma.
 Če ugotovi, da formula ni izpolnljiva, vrne False.
@@ -92,52 +107,158 @@ jo vrne v obliki slovarja.
 Argumenti:
 f -- logični izraz
 d -- slovar podizrazov, privzeto None (naredi nov slovar)
+root -- ali naj se vrne koren grafa v primeru neodločenosti
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
     if not type(d) == dict:
         d = {}
-    s = sat(f, d, trace)
-    if s != None:
-        return s
+    rt = sat(f, d, True, trace)
+    if rt == False or type(rt) == dict:
+        return rt
     
-    for n in d.values():
-        if n.v != None:
-            continue
-        if trace > 1:
-            print("Trying to assign temporary values to %s" % n)
-        if n.valuate(True, None, True, trace):
-            s = getValues(d, True)
-            if s != None:
-                return s
-            if n.valuate(False, None, False, trace):
-                s = getValues(d, False)
-                if s != None:
+    next = sum([[(n, k) for k in range(n.numVariants()) if n.v[k] == None] for n in d.values()], [])
+    lt = len(next)
+    ln = lt+1
+    while lt < ln:
+        todo = next
+        next = []
+        for n, k in todo:
+            if n.v[k] != None:
+                continue
+            if trace > 1:
+                print("Trying to assign temporary values to %d:%s" % (k, n))
+            if n.valuate(True, (None, k), (True, k), trace):
+                s = getValues(d, rt, True)
+                if type(s) == dict:
                     return s
-                for nn in d.values():
-                    nn.clearTemp()
+                if n.valuate(False, (None, k), (False, k), trace):
+                    s = getValues(d, rt, False)
+                    if type(s) == dict:
+                        return s
+                    for nn in d.values():
+                        nn.clearTemp()
+                else:
+                    for nn in d.values():
+                        for i in range(nn.numVariants()):
+                            if nn.vt[i] != None:
+                                nn.setValue(nn.vt[i], nn.ct[i], (None, i))
+                        nn.clearTemp()
             else:
                 for nn in d.values():
-                    if nn.vt != None:
-                        nn.setValue(nn.vt, nn.ct)
                     nn.clearTemp()
-        else:
-            for nn in d.values():
-                nn.clearTemp()
-            if n.valuate(False, None, None, trace):
-                s = getValues(d)
-                if s != None:
-                    return s
-            else:
-                return False
-    return None
-    
-def abbrev(p):
-    if p == True:
-        return 'T'
-    elif p == False:
-        return 'F'
+                if n.valuate(False, (None, k), (None, k), trace):
+                    s = getValues(d, rt)
+                    if type(s) == dict:
+                        return s
+                else:
+                    return False
+            if n.v[k] != None:
+                next.append((n, k))
+        ln = lt
+        lt = len(next)
+    if root:
+        return rt
     else:
-        return 'N'
+        False
+    
+def dpllStep(l, trace=False):
+    """Korak metode DPLL.
+Argumenta:
+l -- seznam disjunktov
+trace -- ali naj se izpisuje sled dokazovanja, privzeto False
+"""
+    num = 1
+    out = []
+    while num > 0:
+        while num > 0:
+            literals = {}
+            next = []
+            for x in l:
+                if isinstance(x, Literal):
+                    if x.p in literals and not literals[x.p]:
+                        if trace:
+                            print("Contradiction for literal %s" % x.p)
+                        return False
+                    else:
+                        literals[x.p] = True
+                elif isinstance(x, Not):
+                    if x.t.p in literals and literals[x.t.p]:
+                        if trace:
+                            print("Contradiction for literal %s" % x.p)
+                        return False
+                    else:
+                        literals[x.t.p] = False
+                elif len(x.l) == 0:
+                    if trace:
+                        print("Empty disjunction found")
+                    return False
+                elif not any([Not(y) in x.l for y in x.l if isinstance(y, Literal)]):
+                    next.append(x)
+            num = len(literals)
+            out += literals.items()
+            l = [y for y in [x.apply(literals) for x in next] if not isinstance(y, And)]
+            if trace > 1:
+                print("Found %d literals: %s, simplified to %s" % (num, literals, l))
+        pure = {}
+        for d in l:
+            for x in d.l:
+                if isinstance(x, Literal):
+                    pure[x.p] = None if (x.p in pure and pure[x.p] != True) else True
+                else:
+                    pure[x.t.p] = None if (x.t.p in pure and pure[x.t.p] != False) else False
+        purs = [(k, v) for (k, v) in pure.items() if v != None]
+        num = len(purs)
+        out += purs
+        l = [y for y in [x.apply(dict(purs)) for x in l] if not isinstance(y, And)]
+        if trace > 1:
+            print("Found %d pures: %s, simplified to %s" % (num, purs, l))
+    if len(l) == 0:
+        return dict(out)
+    p = [k for (k, v) in pure.items() if v == None][0]
+    if trace:
+        print("Trying %s:T" % p)
+    true = dpllStep([y for y in [x.apply({p: True}) for x in l] if not isinstance(y, And)], trace)
+    if type(true) == dict:
+        return dict(out + [(p, True)] + true.items())
+    if trace:
+        print("Failed %s:T" % p)
+        print("Trying %s:F" % p)
+    false = dpllStep([y for y in [x.apply({p: False}) for x in l] if not isinstance(y, And)], trace)
+    if type(false) == dict:
+        return dict(out + [(p, False)] + false.items())
+    if trace:
+        print("Failed %s:F" % p)
+    return False
+        
+def dpll(f, trace=False):
+    """Glavni program metode DPLL.
+Argumenta:
+f -- logični izraz
+trace -- ali naj se izpisuje sled dokazovanja, privzeto False
+"""
+    f = cnf(f)
+    if isinstance(f, And):
+        l = f.l
+    else:
+        l = [f]
+    return dpllStep(l, trace)
+    
+def abbrev(p, s=None):
+    """Vrne okrajšano obliko opisa stanja valuacije.
+Argumenta:
+p -- objekt za krajšanje
+s -- zagotovilo, privzeto None
+"""
+    if type(p) == tuple:
+        return '(%s,%d)' % (abbrev(p[0]), p[1])
+    elif type(p) == list:
+        return '[%s]' % ''.join([abbrev(x, s[i]) for i, x in enumerate(p)])
+    elif p == True:
+        return 'T' if s else 't'
+    elif p == False:
+        return 'F' if s else 'f'
+    else:
+        return 'N' if s else 'n'
     
 class DAGNode:
     
@@ -145,22 +266,31 @@ class DAGNode:
 Metode:
 __init__ -- konstruktor
 __repr__ -- znakovna predstavitev
+init -- inicializacija
 getValue -- vrne ustrezno trenutno vrednost
 setValue -- nastavi ustrezno trenutno vrednost
+getSure -- ali vrednosti otrok zagotavljajo trenutno vrednost
+setSure -- nastavi zagotovilo o trenutni vrednosti
 clearTemp -- pobriše začasne oznake
+numVariants -- število variant podizrazov, ki jih je treba preveriti
 valuate -- valuacija v dano logično vrednost
 parents -- posodobitev stanja staršev
 update -- posodobitev po spremembi stanja enega od otrok
 Spremenljivke:
 a -- seznam prednikov
-v -- trenutno znana vrednost izraza
-vt -- začasna vrednost ob predpostavki o veljavnosti začetnega vozlišča
-vf -- začasna vrednost ob predpostavki o neveljavnosti začetnega vozlišča
-c -- vozlišče, od katerega je prišla vrednost izraza
-ct -- vozlišče, od katerega je prišla vrednost izraza ob predpostavki o
+v -- trenutno znane vrednosti izraza
+vt -- začasne vrednosti ob predpostavki o veljavnosti začetnega vozlišča
+vf -- začasne vrednosti ob predpostavki o neveljavnosti začetnega vozlišča
+c -- vozlišča, od katerega so prišle vrednosti izraza
+ct -- vozlišča, od katerega so prišle vrednosti izraza ob predpostavki o
 veljavnosti začetnega vozlišča
-cf -- vozlišče, od katerega je prišla vrednost izraza ob predpostavki o
+cf -- vozlišča, od katerega so prišle vrednosti izraza ob predpostavki o
 neveljavnosti začetnega vozlišča
+s -- ali vrednosti otrok zagotavljajo trenutno znane vrednosti
+st -- ali vrednosti otrok zagotavljajo trenutno znane začasne vrednosti
+ob predpostavki o veljavnosti začetnega vozlišča
+sf -- ali vrednosti otrok zagotavljajo trenutno znane začasne vrednosti
+ob predpostavki o neveljavnosti začetnega vozlišča
 """
     
     def __init__(self):
@@ -169,19 +299,36 @@ neveljavnosti začetnega vozlišča
         
     def __repr__(self):
         """Znakovna predstavitev."""
-        return "%s(%s,%s)" % tuple([abbrev(x) for x in [self.v, self.vt, self.vf]])
+        return '%s(%s,%s)' % tuple([abbrev(x, y) for (x, y) in [(self.v, self.s), (self.vt, self.st), (self.vf, self.sf)]])
+        
+    def init(self):
+        """Inicializacija vozlišča."""
+        self.a = []
+        self.v = [None]*self.numVariants()
+        self.vt = [None]*self.numVariants()
+        self.vf = [None]*self.numVariants()
+        self.c = [None]*self.numVariants()
+        self.ct = [None]*self.numVariants()
+        self.cf = [None]*self.numVariants()
+        self.s = [False]*self.numVariants()
+        self.st = [False]*self.numVariants()
+        self.sf = [False]*self.numVariants()
         
     def getValue(self, p=None):
         """Vrne trajno ali začasno vrednost izraza.
 Argument:
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 """
-        if p == None:
-            return self.v
-        elif p:
-            return self.vt
+        if type(p) == tuple:
+            p, k = p
         else:
-            return self.vf
+            k = 0
+        if p == None:
+            return self.v[k]
+        elif p:
+            return self.vt[k]
+        else:
+            return self.vf[k]
             
     def setValue(self, b, c=None, p=None):
         """Nastavi trajno ali začasno vrednost izraza. Če sta začasni
@@ -191,31 +338,93 @@ b -- nastavljena vrednost
 c -- vozlišče, od katerega je prišla vrednost izraza, privzeto None
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 """
-        if p == None:
-            self.v = b
-            self.vt = b
-            self.vf = b
-            self.c = c
-            self.ct = None
-            self.cf = None
-        elif p:
-            self.vt = b
-            self.ct = c
-            if self.vf == b:
-                self.v = b
-                self.c = (c, self.cf)
+        if type(p) == tuple:
+            p, k = p
         else:
-            self.vf = b
-            self.cf = c
-            if self.vt == b:
-                self.v = b
-                self.c = (self.ct, c)
+            k = 0
+        if p == None:
+            self.v[k] = b
+            self.vt[k] = b
+            self.vf[k] = b
+            self.c[k] = c
+        elif p:
+            self.vt[k] = b
+            self.ct[k] = c
+            if self.vf[k] == b:
+                self.v[k] = b
+                self.c[k] = (c, self.cf[k])
+        else:
+            self.vf[k] = b
+            self.cf[k] = c
+            if self.vt[k] == b:
+                self.v[k] = b
+                self.c[k] = (self.ct[k], c)
+                
+    def getSure(self, p=None):
+        """Pove, ali vrednosti otrok zagotavljajo trenutno vrednost.
+Argument:
+p -- začetna predpostavka, privzeto None (trajna vrednost)
+"""
+        if type(p) == tuple:
+            p, k = p
+        else:
+            k = 0
+        if p == None:
+            return self.s[k]
+        elif p:
+            return self.st[k]
+        else:
+            return self.sf[k]
+            
+    def setSure(self, p=None, trace=False):
+        """Nastavi zagotovilo o trenutni vrednosti. Če obstajata zagotovili
+o začasni vrednosti, nastavi zagotovilo o trajni vrednosti.
+Vrne True, če je zagotovilo novo, in False, če je že obstajalo.
+Argumenta:
+p -- začetna predpostavka, privzeto None (trajna vrednost)
+trace -- ali naj se izpisuje sled dokazovanja, privzeto False
+"""
+        if type(p) == tuple:
+            p, k = p
+        else:
+            k = 0
+        if p == None:
+            if self.s[k]:
+                return False
+            self.s[k] = True
+            self.st[k] = True
+            self.sf[k] = True
+        elif p:
+            if self.st[k]:
+                return False
+            self.st[k] = True
+            if self.sf[k]:
+                self.s[k] = True
+        else:
+            if self.sf[k]:
+                return False
+            self.sf[k] = True
+            if self.st[k]:
+                self.s[k] = True
+        if trace > 3:
+            print("Ensured at %s the value of the node %s" % (abbrev((p, k)), self))
+        return True
                 
     def clearTemp(self):
         """Pobriše začasne oznake."""
-        if self.v == None:
-            self.vt = None
-            self.vf = None
+        for i in range(self.numVariants()):
+            if self.v[i] == None:
+                self.vt[i] = None
+                self.vf[i] = None
+                self.ct[i] = None
+                self.cf[i] = None
+                self.st[i] = False
+                self.sf[i] = False
+            
+    def numVariants(self):
+        """Vrne število variant podizrazov, ki jih je treba preveriti.
+Generična metoda, vrne 1."""
+        return 1
         
     def valuate(self, b, c=None, p=None, trace=False):
         """Valuacija v logično vrednost b.
@@ -234,12 +443,12 @@ trace -- ali naj se izpisuje sled dokazovanja, privzeto False
         if v != None:
             if trace:
                 if v != b:
-                    print("Error valuating %s to %s:%s from %s" % (self, p, b, c))
-                elif trace > 2:
-                    print("Skipping %s" % self)
+                    print("Error valuating to %s:%s the node %s from %s" % (abbrev(p), abbrev(b), self, c))
+                elif trace > 4:
+                    print("Skipping valuation to %s:%s of the node %s" % (abbrev(p), abbrev(b), self))
             return v == b
         if trace > 2:
-            print("Valuating to %s:%s the node %s" % (p, b, self))
+            print("Valuating to %s:%s the node %s" % (abbrev(p), abbrev(b), self))
         self.setValue(b, c, p)
         return None
         
@@ -251,8 +460,16 @@ b -- nastavljena vrednost
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
+        if type(p) == tuple:
+            p, k = p
+        else:
+            k = 0
         for x in self.a:
-            if not x.update(b, self, p, trace):
+            if type(x) == tuple:
+                x, t = x
+            else:
+                t = 0
+            if not x.update(b, (self, k), (p, t), trace):
                 return False
         return True
         
@@ -283,8 +500,7 @@ d -- slovar podizrazov
 p -- ime spremenljivke
 """
         self.p = p
-        self.a = []
-        self.setValue(None)
+        self.init()
         
     def __repr__(self):
         """Znakovna predstavitev."""
@@ -300,6 +516,9 @@ None
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
+        if type(p) == tuple:
+            p = p[0]
+        self.setSure(p, trace)
         return DAGNode.valuate(self, b, c, p, trace) != False and self.parents(b, p, trace)
 
 class DAGNot(DAGNode):
@@ -319,12 +538,14 @@ t -- negirani izraz
 """
         self.t = t.node(d)
         self.t.a.append(self)
-        self.a = []
-        self.setValue(None)
+        self.init()
         
     def __repr__(self):
         """Znakovna predstavitev."""
-        return "%s: ~(%s)" % (DAGNode.__repr__(self), self.t)
+        r = str(self.t)
+        if len(r) > 100:
+            r = '...'
+        return "%s: ~(%s)" % (DAGNode.__repr__(self), r)
         
     def valuate(self, b, c=None, p=None, trace=False):
         """Valuacija v logično vrednost b.
@@ -339,12 +560,14 @@ trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
         val = DAGNode.valuate(self, b, c, p, trace)
         if val == None:
-            return self.t.valuate(not b, self, p, trace) and self.parents(b, p, trace)
+            if type(p) == tuple:
+                p = p[0]
+            return self.t.valuate(not b, (self, 0), p, trace) and self.parents(b, p, trace)
         else:
             return val
         
     def update(self, b, c=None, p=None, trace=False):
-        """Posodobi stanje po valuaciji enega od otrok v logično vrednost b.
+        """Posodobi stanje po valuaciji otroka v logično vrednost b.
 Uspe, če uspe valuacija v nasprotno vrednost od b.
 Argumenti:
 b -- nastavljena vrednost otroka
@@ -353,7 +576,17 @@ None
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
-        return self.valuate(not b, c, p, trace)
+        if type(p) == tuple:
+            p = p[0]
+        sure = self.t.getSure(p) and self.setSure(p, trace)
+        if b != None:
+            b = not b
+            val = DAGNode.valuate(self, b, c, p, trace)
+            if val == False:
+                return False
+            elif val:
+                b = None
+        return (b == None and not sure) or self.parents(b, p, trace)
 
 class DAGAnd(DAGNode):
     
@@ -371,19 +604,37 @@ d -- slovar podizrazov
 l -- seznam konjuktov
 """
         self.l = [x.node(d) for x in l]
-        for x in self.l:
-            x.a.append(self)
-        self.a = []
-        self.setValue(True if len(l) == 0 else None)
+        for i, x in enumerate(self.l):
+            x.a.append((self, i))
+        self.init()
         
     def __repr__(self):
         """Znakovna predstavitev."""
-        return '%s: (%s)' % (DAGNode.__repr__(self), ') /\\ ('.join([str(x) for x in self.l]))
+        r = ') /\\ ('.join([str(x) for x in self.l])
+        if len(r) > 100:
+            r = '%d conjuncts' % len(self.l)
+        return '%s: (%s)' % (DAGNode.__repr__(self), r)
+        
+    def getValue(self, p=None):
+        """Vrne trajno ali začasno vrednost izraza.
+Če hočemo vrednost zadnjega podizraza (dolžine 1), vrnemo vrednost zadnjega konjunkta.
+Argument:
+p -- začetna predpostavka, privzeto None (trajna vrednost)
+"""
+        if type(p) == tuple and p[1] == self.numVariants():
+            return self.l[-1].getValue(p[0])
+        else:
+            return DAGNode.getValue(self, p)
             
+    def numVariants(self):
+        """Vrne število variant podizrazov, ki jih je treba preveriti.
+Vrne 1 ali število konjunktov minus 1."""
+        return max(1, len(self.l)-1)
+                            
     def valuate(self, b, c=None, p=None, trace=False):
         """Valuacija v logično vrednost b.
 Valuacija uspe, če vrednost b ne nasprotuje že znani vrednosti. Če je
-b resničen, se morajo še vsi konjuknti valuirati v True. V nasprotnem
+b resničen, se morajo še vsi konjunkti valuirati v True. V nasprotnem
 primeru preveri, ali je trenutna vrednost vsaj enega konjunkta različna
 od True. Če edini tak konjunkt še nima vrednosti, ga valuira v False.
 Argumenti:
@@ -395,15 +646,45 @@ trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
         val = DAGNode.valuate(self, b, c, p, trace)
         if val == None:
-            if b:
-                for x in self.l:
-                    if not x.valuate(True, self, p, trace):
-                        return False
-            elif not any([x.getValue(p) == False for x in self.l]):
-                n = [x for x in self.l if x.getValue(p) == None]
-                if len(n) == 0 or (len(n) == 1 and not n[0].valuate(False, self, p, trace)):
+            if type(p) == tuple:
+                p, k = p
+            else:
+                k = 0
+                
+            if len(self.l) == 0:
+                if not b:
                     return False
-            return self.parents(b, p, trace)
+                self.setSure(p, trace)
+            elif len(self.l) == 1:
+                if not self.l[0].valuate(b, (self, k), p, trace):
+                    return False
+            else:
+                i = k
+                if b:
+                    while i < len(self.l)-1:
+                        val = DAGNode.valuate(self, True, (self, k), (p, i+1), trace) if i < len(self.l)-2 else self.l[-1].valuate(True, (self, k), p, trace)
+                        if val == False or not self.l[i].valuate(True, (self, k), p, trace):
+                            return False
+                        elif val:
+                            break
+                        i += 1
+                else:
+                    while i < len(self.l)-1:
+                        if self.l[i].getValue(p):
+                            val = DAGNode.valuate(self, False, (self, k), (p, i+1), trace) if i < len(self.l)-2 else self.l[-1].valuate(False, (self, k), p, trace)
+                            if val == False:
+                                return False
+                            if val:
+                                break
+                        else:
+                            if (self.getValue((p, i+1)) if i < len(self.l)-2 else self.l[-1].getValue(p)) and not self.l[i].valuate(False, (self, k), p, trace):
+                                return False
+                            break
+                        i += 1
+            if k > 0:
+                return self.update(b, (self, k), (p, k-1), trace)
+            else:
+                return self.parents(b, p, trace)
         else:
             return val
             
@@ -420,15 +701,79 @@ None
 p -- začetna predpostavka, privzeto None (trajna vrednost)
 trace -- ali naj se izpisuje sled dokazovanja, privzeto False
 """
-        if not b:
-            return self.valuate(False, c, p, trace)
-        elif all([x.getValue(p) for x in self.l]):
-            return self.valuate(True, c, p, trace)
-        elif self.getValue(p) == False and not any([x.getValue(p) == False for x in self.l]):
-            n = [x for x in self.l if x.getValue(p) == None]
-            if len(n) == 1 and not n[0].valuate(False, c, p, trace):
-                return False
-        return True
+        if type(p) == tuple:
+            p, k = p
+        else:
+            k = 0
+        if len(self.l) <= 1:
+            sure = True
+        else:
+            if b:
+                if k == len(self.l)-1:
+                    k -= 1
+                    if self.getValue((p, k)) == False:
+                        if not self.l[k].valuate(False, c, p, trace):
+                            return False
+                        else:
+                            b = None
+                    elif not self.l[k].getValue(p):
+                        b = None
+                elif (c[0] if type(c) == tuple else c) != self:
+                    if self.getValue((p, k)) == False:
+                        if not (self.valuate(False, c, (p, k+1), trace) if k < len(self.l)-2 else self.l[-1].valuate(False, c, p, trace)):
+                            return False
+                        else:
+                            b = None
+                    elif not (self.l[-1].getValue(p) if k == len(self.l)-2 else self.getValue((p, k+1))):
+                        b = None
+                else:
+                    if self.getValue((p, k)) == False:
+                        if not self.l[k].valuate(False, c, p, trace):
+                            return False
+                        else:
+                            b = None
+                    elif not self.l[k].getValue(p):
+                        b = None
+                sure = (self.l[-1].getSure(p) if k == len(self.l)-2 else self.getSure((p, k+1))) and self.l[k].getSure(p) and self.setSure((p, k), trace)
+                while b != None:
+                    val = DAGNode.valuate(self, True, c, (p, k), trace)
+                    if val == False:
+                        return False
+                    elif val:
+                        b = None
+                    k -= 1
+                    if k < 0:
+                        break
+                    if self.getValue((p, k)) == False:
+                        if not self.l[k].valuate(False, c, p, trace):
+                            return False
+                        else:
+                            b = None
+                    elif not self.l[k].getValue(p):
+                        b = None
+                    sure = sure and self.l[k].getSure(p) and self.setSure((p, k), trace)
+            else:
+                if k == len(self.l)-1:
+                    k -= 1
+                sure = (self.l[-1].getValue(p) == False and self.l[-1].getSure(p)) if k == len(self.l)-2 else (self.getValue((p, k+1)) == False and self.getSure((p, k+1)))
+                sure = (sure or (self.l[k].getValue(p) == False and self.l[k].getSure(p))) and self.setSure((p, k), trace)
+                while b != None:
+                    val = DAGNode.valuate(self, False, c, (p, k), trace)
+                    if val == False:
+                        return False
+                    elif val:
+                        b = None
+                    k -= 1
+                    if k < 0:
+                        break
+                    sure = (sure or (self.l[k].getValue(p) == False and self.l[k].getSure(p))) and self.setSure((p, k), trace)
+        while sure and k > 0:
+            k -= 1
+            sure = self.l[k].getSure(p)
+            if self.getValue((p, k)) == False:
+                sure = sure or (self.l[-1].getValue(p) if k == len(self.l)-2 else self.getValue((p, k+1))) == False
+            sure = sure and self.setSure((p, k), trace)
+        return (b == None and not sure) or self.parents(b, p, trace)
             
 class LogicalFormula:
     
@@ -777,9 +1122,10 @@ disjunkcij.
             l = sum([y.l if isinstance(y, And) else [y] for y in [x.flatten() for x in self.l]], [])
             if any([isinstance(x, Or) and len(x.l) == 0 for x in l]):
                 return Fls()
+            elif len(l) == 1:
+                return l[0]
             else:
                 return And(l)
-        
         
     def simplify(self):
         """Poenostavi izraz.
@@ -802,9 +1148,11 @@ vrstnem redu.
             add = [Or([y for y in x[0].l if y not in x[1]]).simplify() for x in assorb if len(x[1]) > 0]
             l.difference_update(remove)
             l.update(add)
+            if len(l) == 1:
+                return l.pop()
             if any([isinstance(x, Or) and len(x.l) == 0 for x in l]) or any([x.t in l for x in l if isinstance(x, Not)]):
-                    return Fls()
-            return And(sorted(l))
+                return Fls()
+            return And(sortSet(l))
         
     def cnf(self):
         """Pretvori v konjunktivno normalno obliko.
@@ -919,6 +1267,8 @@ logičnih izrazov.
             l = sum([y.l if isinstance(y, Or) else [y] for y in [x.flatten() for x in self.l]], [])
             if any([isinstance(x, And) and len(x.l) == 0 for x in l]):
                 return Tru()
+            elif len(l) == 1:
+                return l[0]
             else:
                 return Or(l)
         
@@ -943,10 +1293,12 @@ vrstnem redu.
             add = [And([y for y in x[0].l if y not in x[1]]).simplify() for x in assorb if len(x[1]) > 0]
             l.difference_update(remove)
             l.update(add)
+            if len(l) == 1:
+                return l.pop()
             if any([isinstance(x, And) and len(x.l) == 0 for x in l]) or any([x.t in l for x in l if isinstance(x, Not)]):
                     return Tru()
             else:
-                return Or(sorted(l))
+                return Or(sortSet(l))
         
     def cnf(self):
         """Pretvori v konjunktivno normalno obliko.
@@ -1037,4 +1389,3 @@ Deduje od razreda Or.
     def __init__(self):
         """Konstruktor. Nastavi se prazen seznam disjunktov."""
         self.l = []
-
