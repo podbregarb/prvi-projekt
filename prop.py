@@ -242,7 +242,15 @@ trace -- ali naj se izpisuje sled dokazovanja, privzeto False
     else:
         l = [f]
     return dpllStep(l, trace)
+
+def test():
+    izrazi=[And('p','q'),Or('p','q'),Or('p',And('q','p')),And(Or(Not('p'),'q'),'p'),And(Or('p','q'),Or('p','r')),And(And('p','q'),And('q','r'),And('r','p')),And(Or('p','q'),Or('q','r'),Or('r','p'),Not(And('p','q')),Not(And('q','r')),Not(And('r','p')))]
+    for i in izrazi:
+        print(i)
+        print(dpll(i))
     
+    
+            
 def abbrev(p, s=None):
     """Vrne okrajšano obliko opisa stanja valuacije.
 Argumenta:
